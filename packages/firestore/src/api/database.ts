@@ -48,7 +48,10 @@ import { _FirebaseApp, FirebaseService } from '@firebase/app-types/private';
 import { Blob } from './blob';
 import { DatabaseId, DatabaseInfo } from '../core/database_info';
 import { ListenOptions } from '../core/event_manager';
-import { ComponentConfiguration } from '../core/component_provider';
+import {
+  ComponentConfiguration,
+  MEMORY_ONLY_PERSISTENCE_ERROR_MESSAGE
+} from '../core/component_provider';
 import {
   FirestoreClient,
   MAX_CONCURRENT_LIMBO_RESOLUTIONS,
@@ -160,6 +163,7 @@ import {
   getOnlineComponentProvider,
   getRemoteStore
 } from '../../exp/src/api/components';
+import { FirebaseFirestore } from '../../exp-types';
 
 // settings() defaults:
 const DEFAULT_HOST = 'firestore.googleapis.com';
@@ -335,6 +339,54 @@ class FirestoreSettings {
   }
 }
 
+export interface PersistenceProvider {
+  enableIndexedDbPersistence(
+    firestore: FirestoreCompat,
+    persistenceSettings?: PersistenceSettings
+  ): Promise<void>;
+  enableMultiTabIndexedDbPersistence(firestore: FirestoreCompat): Promise<void>;
+  clearIndexedDbPersistence(firestore: FirestoreCompat): Promise<void>;
+}
+
+export class MemoryPersistenceProvider implements PersistenceProvider {
+  enableIndexedDbPersistence(
+    firestore: FirestoreCompat,
+    persistenceSettings?: PersistenceSettings
+  ): Promise<void> {
+    throw new FirestoreError(
+      Code.FAILED_PRECONDITION,
+      MEMORY_ONLY_PERSISTENCE_ERROR_MESSAGE
+    );
+  }
+  enableMultiTabIndexedDbPersistence(
+    firestore: FirestoreCompat
+  ): Promise<void> {
+    throw new FirestoreError(
+      Code.FAILED_PRECONDITION,
+      MEMORY_ONLY_PERSISTENCE_ERROR_MESSAGE
+    );
+  }
+  clearIndexedDbPersistence(firestore: FirestoreCompat): Promise<void> {
+    throw new FirestoreError(
+      Code.FAILED_PRECONDITION,
+      MEMORY_ONLY_PERSISTENCE_ERROR_MESSAGE
+    );
+  }
+}
+
+export class MultiTabIndexedDbPersistenceProvider
+  implements PersistenceProvider {
+  enableIndexedDbPersistence(
+    firestore: FirestoreCompat,
+    persistenceSettings?: PersistenceSettings
+  ) {
+    const forceOwnership =
+      persistenceSettings?.durable && persistenceSettings.forceOwningTab;
+    return enableIndexedDbPersistence(firestore, { forceOwnership });
+  }
+  enableMultiTabIndexedDbPersistence = enableMultiTabIndexedDbPersistence;
+  clearIndexedDbPersistence = clearIndexedDbPersistence;
+}
 /**
  * The root reference to the database.
  */
@@ -373,12 +425,13 @@ export class Firestore
   _terminated = false;
   _initialized = false;
 
-  // Note: We are using `MemoryComponentProvider` as a default
+  // Note: We are using `MemoryPersistenceProvider` as a default
   // ComponentProvider to ensure backwards compatibility with the format
   // expected by the console build.
   constructor(
     databaseIdOrApp: FirestoreDatabase | FirebaseApp,
-    authProvider: Provider<FirebaseAuthInternalName>
+    authProvider: Provider<FirebaseAuthInternalName>,
+    readonly _persistenceProvider: PersistenceProvider = new MemoryPersistenceProvider()
   ) {
     if (typeof (databaseIdOrApp as FirebaseApp).options === 'object') {
       // This is very likely a Firebase app object
@@ -546,9 +599,11 @@ export class Firestore
     return Promise.resolve().then(async () => {
       try {
         if (synchronizeTabs) {
-          await enableMultiTabIndexedDbPersistence(this);
+          await this._persistenceProvider.enableMultiTabIndexedDbPersistence(
+            this
+          );
         } else {
-          await enableIndexedDbPersistence(this);
+          await this._persistenceProvider.enableIndexedDbPersistence(this);
         }
         persistenceResult.resolve();
       } catch (e) {

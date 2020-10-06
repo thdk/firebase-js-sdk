@@ -71,7 +71,7 @@ import { newSerializer } from '../platform/serializer';
 import { getDocument, getWindow } from '../platform/dom';
 import { CredentialsProvider } from '../api/credentials';
 
-const MEMORY_ONLY_PERSISTENCE_ERROR_MESSAGE =
+export const MEMORY_ONLY_PERSISTENCE_ERROR_MESSAGE =
   'You are using the memory-only build of Firestore. Persistence support is ' +
   'only available via the @firebase/firestore bundle or the ' +
   'firebase-firestore.js build.';
@@ -99,11 +99,6 @@ export interface OfflineComponentProvider {
   initialize(cfg: ComponentConfiguration): Promise<void>;
 
   terminate(): Promise<void>;
-
-  clearPersistence(
-    databaseId: DatabaseId,
-    persistenceKey: string
-  ): Promise<void>;
 }
 
 /**
@@ -140,12 +135,10 @@ export class MemoryOfflineComponentProvider
   }
 
   createPersistence(cfg: ComponentConfiguration): Persistence {
-    if (cfg.persistenceSettings.durable) {
-      throw new FirestoreError(
-        Code.FAILED_PRECONDITION,
-        MEMORY_ONLY_PERSISTENCE_ERROR_MESSAGE
-      );
-    }
+    debugAssert(
+      !cfg.persistenceSettings.durable,
+      'Memory persistence cannot be durable'
+    );
     return new MemoryPersistence(MemoryEagerDelegate.factory);
   }
 
@@ -159,16 +152,6 @@ export class MemoryOfflineComponentProvider
     }
     await this.sharedClientState.shutdown();
     await this.persistence.shutdown();
-  }
-
-  clearPersistence(
-    databaseId: DatabaseId,
-    persistenceKey: string
-  ): Promise<void> {
-    throw new FirestoreError(
-      Code.FAILED_PRECONDITION,
-      MEMORY_ONLY_PERSISTENCE_ERROR_MESSAGE
-    );
   }
 }
 
@@ -233,15 +216,6 @@ export class IndexedDbOfflineComponentProvider extends MemoryOfflineComponentPro
 
   createSharedClientState(cfg: ComponentConfiguration): SharedClientState {
     return new MemorySharedClientState();
-  }
-
-  clearPersistence(
-    databaseId: DatabaseId,
-    persistenceKey: string
-  ): Promise<void> {
-    return indexedDbClearPersistence(
-      indexedDbStoragePrefix(databaseId, persistenceKey)
-    );
   }
 }
 
