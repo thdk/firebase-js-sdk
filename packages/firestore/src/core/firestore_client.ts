@@ -18,7 +18,6 @@
 import { GetOptions } from '@firebase/firestore-types';
 
 import { CredentialsProvider } from '../api/credentials';
-import { User } from '../auth/user';
 import {
   executeQuery,
   LocalStore,
@@ -29,7 +28,6 @@ import { Document, NoDocument } from '../model/document';
 import { DocumentKey } from '../model/document_key';
 import { Mutation } from '../model/mutation';
 import {
-  remoteStoreHandleCredentialChange,
   RemoteStore,
   remoteStoreEnableNetwork,
   remoteStoreDisableNetwork,
@@ -37,7 +35,6 @@ import {
 } from '../remote/remote_store';
 import { AsyncQueue, wrapInUserErrorIfRecoverable } from '../util/async_queue';
 import { Code, FirestoreError } from '../util/error';
-import { logDebug } from '../util/log';
 import { Deferred } from '../util/promise';
 import {
   addSnapshotsInSyncListener,
@@ -58,13 +55,11 @@ import {
 } from './sync_engine';
 import { View } from './view';
 import { SharedClientState } from '../local/shared_client_state';
-import { AutoId } from '../util/misc';
 import { DatabaseId, DatabaseInfo } from './database_info';
 import { newQueryForPath, Query } from './query';
 import { Transaction } from './transaction';
 import { ViewSnapshot } from './view_snapshot';
 import {
-  MemoryOfflineComponentProvider,
   OfflineComponentProvider,
   OnlineComponentProvider
 } from './component_provider';
@@ -73,7 +68,6 @@ import { debugAssert } from '../util/assert';
 import { TransactionRunner } from './transaction_runner';
 import { Datastore } from '../remote/datastore';
 
-const LOG_TAG = 'FirestoreClient';
 export const MAX_CONCURRENT_LIMBO_RESOLUTIONS = 100;
 
 export type PersistenceSettings =

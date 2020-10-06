@@ -48,12 +48,7 @@ import { _FirebaseApp, FirebaseService } from '@firebase/app-types/private';
 import { Blob } from './blob';
 import { DatabaseId, DatabaseInfo } from '../core/database_info';
 import { ListenOptions } from '../core/event_manager';
-import {
-  ComponentConfiguration,
-  MemoryOfflineComponentProvider,
-  OfflineComponentProvider,
-  OnlineComponentProvider
-} from '../core/component_provider';
+import { ComponentConfiguration } from '../core/component_provider';
 import {
   FirestoreClient,
   MAX_CONCURRENT_LIMBO_RESOLUTIONS,
