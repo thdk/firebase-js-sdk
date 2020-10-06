@@ -48,10 +48,7 @@ import { _FirebaseApp, FirebaseService } from '@firebase/app-types/private';
 import { Blob } from './blob';
 import { DatabaseId, DatabaseInfo } from '../core/database_info';
 import { ListenOptions } from '../core/event_manager';
-import {
-  ComponentConfiguration,
-  MEMORY_ONLY_PERSISTENCE_ERROR_MESSAGE
-} from '../core/component_provider';
+import { ComponentConfiguration } from '../core/component_provider';
 import {
   FirestoreClient,
   MAX_CONCURRENT_LIMBO_RESOLUTIONS,
@@ -348,6 +345,11 @@ export interface PersistenceProvider {
   clearIndexedDbPersistence(firestore: FirestoreCompat): Promise<void>;
 }
 
+const MEMORY_ONLY_PERSISTENCE_ERROR_MESSAGE =
+  'You are using the memory-only build of Firestore. Persistence support is ' +
+  'only available via the @firebase/firestore bundle or the ' +
+  'firebase-firestore.js build.';
+
 export class MemoryPersistenceProvider implements PersistenceProvider {
   enableIndexedDbPersistence(
     firestore: FirestoreCompat,
@@ -381,7 +383,7 @@ export class MultiTabIndexedDbPersistenceProvider
     persistenceSettings?: PersistenceSettings
   ) {
     const forceOwnership =
-      persistenceSettings?.durable && persistenceSettings.forceOwningTab;
+      persistenceSettings && persistenceSettings.forceOwningTab;
     return enableIndexedDbPersistence(firestore, { forceOwnership });
   }
   enableMultiTabIndexedDbPersistence = enableMultiTabIndexedDbPersistence;
@@ -418,7 +420,7 @@ export class Firestore
   // TODO(mikelehen): Use modularized initialization instead.
   readonly _queue = new AsyncQueue();
 
-  _persistenceSettings: PersistenceSettings = { durable: false };
+  _persistenceSettings: PersistenceSettings = {};
   _userDataReader: UserDataReader | undefined;
   _user = User.UNAUTHENTICATED;
 
@@ -590,7 +592,6 @@ export class Firestore
     }
 
     this._persistenceSettings = {
-      durable: true,
       cacheSizeBytes: this._settings.cacheSizeBytes,
       synchronizeTabs,
       forceOwningTab

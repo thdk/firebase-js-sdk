@@ -70,16 +70,11 @@ import { Datastore } from '../remote/datastore';
 
 export const MAX_CONCURRENT_LIMBO_RESOLUTIONS = 100;
 
-export type PersistenceSettings =
-  | {
-      readonly durable: false;
-    }
-  | {
-      readonly durable: true;
-      readonly cacheSizeBytes: number;
-      readonly synchronizeTabs: boolean;
-      readonly forceOwningTab: boolean;
-    };
+export interface PersistenceSettings {
+  readonly cacheSizeBytes?: number;
+  readonly synchronizeTabs?: boolean;
+  readonly forceOwningTab?: boolean;
+}
 
 /**
  * FirestoreClient is a top-level class that constructs and owns all of the

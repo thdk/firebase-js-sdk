@@ -32,11 +32,11 @@ import {
   applyOnlineStateChange,
   applyPrimaryState,
   applyTargetState,
+  ensureWriteCallbacks,
   getActiveClients,
-  syncEngineHandleCredentialChange,
   newSyncEngine,
   SyncEngine,
-  ensureWriteCallbacks
+  syncEngineHandleCredentialChange
 } from './sync_engine';
 import {
   fillWritePipeline,
@@ -47,20 +47,18 @@ import {
 } from '../remote/remote_store';
 import { EventManager, newEventManager } from './event_manager';
 import { AsyncQueue } from '../util/async_queue';
-import { DatabaseId, DatabaseInfo } from './database_info';
+import { DatabaseInfo } from './database_info';
 import { Datastore, newDatastore } from '../remote/datastore';
 import { User } from '../auth/user';
 import { PersistenceSettings } from './firestore_client';
-import { debugAssert } from '../util/assert';
 import { GarbageCollectionScheduler, Persistence } from '../local/persistence';
 import { Code, FirestoreError } from '../util/error';
 import { OnlineStateSource } from './types';
 import { LruParams, LruScheduler } from '../local/lru_garbage_collector';
 import { IndexFreeQueryEngine } from '../local/index_free_query_engine';
 import {
-  indexedDbStoragePrefix,
   IndexedDbPersistence,
-  indexedDbClearPersistence
+  indexedDbStoragePrefix
 } from '../local/indexeddb_persistence';
 import {
   MemoryEagerDelegate,
@@ -70,11 +68,6 @@ import { newConnection, newConnectivityMonitor } from '../platform/connection';
 import { newSerializer } from '../platform/serializer';
 import { getDocument, getWindow } from '../platform/dom';
 import { CredentialsProvider } from '../api/credentials';
-
-export const MEMORY_ONLY_PERSISTENCE_ERROR_MESSAGE =
-  'You are using the memory-only build of Firestore. Persistence support is ' +
-  'only available via the @firebase/firestore bundle or the ' +
-  'firebase-firestore.js build.';
 
 export interface ComponentConfiguration {
   asyncQueue: AsyncQueue;
@@ -135,10 +128,6 @@ export class MemoryOfflineComponentProvider
   }
 
   createPersistence(cfg: ComponentConfiguration): Persistence {
-    debugAssert(
-      !cfg.persistenceSettings.durable,
-      'Memory persistence cannot be durable'
-    );
     return new MemoryPersistence(MemoryEagerDelegate.factory);
   }
 
@@ -190,27 +179,25 @@ export class IndexedDbOfflineComponentProvider extends MemoryOfflineComponentPro
   }
 
   createPersistence(cfg: ComponentConfiguration): IndexedDbPersistence {
-    debugAssert(
-      cfg.persistenceSettings.durable,
-      'Can only start durable persistence'
-    );
-
     const persistenceKey = indexedDbStoragePrefix(
       cfg.databaseInfo.databaseId,
       cfg.databaseInfo.persistenceKey
     );
     const serializer = newSerializer(cfg.databaseInfo.databaseId);
     return new IndexedDbPersistence(
-      cfg.persistenceSettings.synchronizeTabs,
+      !!cfg.persistenceSettings.synchronizeTabs,
       persistenceKey,
       cfg.clientId,
-      LruParams.withCacheSize(cfg.persistenceSettings.cacheSizeBytes),
+      LruParams.withCacheSize(
+        cfg.persistenceSettings.cacheSizeBytes ||
+          LruParams.DEFAULT_CACHE_SIZE_BYTES
+      ),
       cfg.asyncQueue,
       getWindow(),
       getDocument(),
       serializer,
       this.sharedClientState,
-      cfg.persistenceSettings.forceOwningTab
+      !!cfg.persistenceSettings.forceOwningTab
     );
   }
 
@@ -264,10 +251,7 @@ export class MultiTabOfflineComponentProvider extends IndexedDbOfflineComponentP
   }
 
   createSharedClientState(cfg: ComponentConfiguration): SharedClientState {
-    if (
-      cfg.persistenceSettings.durable &&
-      cfg.persistenceSettings.synchronizeTabs
-    ) {
+    if (cfg.persistenceSettings.synchronizeTabs) {
       const window = getWindow();
       if (!WebStorageSharedClientState.isAvailable(window)) {
         throw new FirestoreError(
@@ -371,8 +355,7 @@ export class OnlineComponentProvider {
       this.sharedClientState,
       cfg.initialUser,
       cfg.maxConcurrentLimboResolutions,
-      !cfg.persistenceSettings.durable ||
-        !cfg.persistenceSettings.synchronizeTabs
+      cfg.persistenceSettings.synchronizeTabs !== false
     );
   }
 
