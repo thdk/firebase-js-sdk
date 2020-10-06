@@ -76,11 +76,6 @@ import { Datastore } from '../remote/datastore';
 const LOG_TAG = 'FirestoreClient';
 export const MAX_CONCURRENT_LIMBO_RESOLUTIONS = 100;
 
-/** DOMException error code constants. */
-const DOM_EXCEPTION_INVALID_STATE = 11;
-const DOM_EXCEPTION_ABORTED = 20;
-const DOM_EXCEPTION_QUOTA_EXCEEDED = 22;
-
 export type PersistenceSettings =
   | {
       readonly durable: false;
@@ -116,13 +111,6 @@ export class FirestoreClient {
   // PORTING NOTE: SharedClientState is only used for multi-tab web.
   private sharedClientState!: SharedClientState;
 
-  private readonly clientId = AutoId.newId();
-
-  // We defer our initialization until we get the current user from
-  // setChangeListener(). We block the async queue until we got the initial
-  // user and the initialization is completed. This will prevent any scheduled
-  // work from happening before initialization is completed.
-  //
   // If initializationDone resolved then the FirestoreClient is in a usable
   // state.
   private readonly initializationDone = new Deferred<void>();
@@ -173,59 +161,19 @@ export class FirestoreClient {
    * required for memory-only or IndexedDB persistence.
    * @param onlineComponentProvider Provider that returns all components
    * required for online support.
-   * @param persistenceSettings Settings object to configure offline
-   *     persistence.
-   * @returns A deferred result indicating the user-visible result of enabling
-   *     offline persistence. This method will reject this if IndexedDB fails to
-   *     start for any reason. If usePersistence is false this is
-   *     unconditionally resolved.
    */
   start(
     databaseInfo: DatabaseInfo,
     offlineComponentProvider: OfflineComponentProvider,
-    onlineComponentProvider: OnlineComponentProvider,
-    persistenceSettings: PersistenceSettings
-  ): Promise<void> {
+    onlineComponentProvider: OnlineComponentProvider
+  ): void {
     this.verifyNotTerminated();
 
     this.databaseInfo = databaseInfo;
-
-    // If usePersistence is true, certain classes of errors while starting are
-    // recoverable but only by falling back to persistence disabled.
-    //
-    // If there's an error in the first case but not in recovery we cannot
-    // reject the promise blocking the async queue because this will cause the
-    // async queue to panic.
-    const persistenceResult = new Deferred<void>();
-
-    let initialized = false;
-    this.credentials.setChangeListener(user => {
-      if (!initialized) {
-        initialized = true;
-
-        logDebug(LOG_TAG, 'Initializing. user=', user.uid);
-
-        return this.initializeComponents(
-          offlineComponentProvider,
-          onlineComponentProvider,
-          persistenceSettings,
-          user,
-          persistenceResult
-        ).then(this.initializationDone.resolve, this.initializationDone.reject);
-      } else {
-        this.asyncQueue.enqueueRetryable(() =>
-          remoteStoreHandleCredentialChange(this.remoteStore, user)
-        );
-      }
-    });
-
-    // Block the async queue until initialization is done
-    this.asyncQueue.enqueueAndForget(() => this.initializationDone.promise);
-
-    // Return only the result of enabling persistence. Note that this does not
-    // need to await the completion of initializationDone because the result of
-    // this method should not reflect any other kind of failure to start.
-    return persistenceResult.promise;
+    this.initializeComponents(
+      offlineComponentProvider,
+      onlineComponentProvider
+    );
   }
 
   /** Enables the network connection and requeues all pending operations. */
@@ -249,117 +197,30 @@ export class FirestoreClient {
    * required for memory-only or IndexedDB persistence.
    * @param onlineComponentProvider Provider that returns all components
    * required for online support.
-   * @param persistenceSettings Settings object to configure offline persistence
-   * @param user The initial user
-   * @param persistenceResult A deferred result indicating the user-visible
-   *     result of enabling offline persistence. This method will reject this if
-   *     IndexedDB fails to start for any reason. If usePersistence is false
-   *     this is unconditionally resolved.
-   * @returns a Promise indicating whether or not initialization should
-   *     continue, i.e. that one of the persistence implementations actually
-   *     succeeded.
    */
-  private async initializeComponents(
+  private initializeComponents(
     offlineComponentProvider: OfflineComponentProvider,
-    onlineComponentProvider: OnlineComponentProvider,
-    persistenceSettings: PersistenceSettings,
-    user: User,
-    persistenceResult: Deferred<void>
-  ): Promise<void> {
-    try {
-      const componentConfiguration = {
-        asyncQueue: this.asyncQueue,
-        databaseInfo: this.databaseInfo,
-        clientId: this.clientId,
-        credentials: this.credentials,
-        initialUser: user,
-        maxConcurrentLimboResolutions: MAX_CONCURRENT_LIMBO_RESOLUTIONS,
-        persistenceSettings
-      };
+    onlineComponentProvider: OnlineComponentProvider
+  ): void {
+    this.persistence = offlineComponentProvider.persistence;
+    this.sharedClientState = offlineComponentProvider.sharedClientState;
+    this.localStore = offlineComponentProvider.localStore;
+    this.gcScheduler = offlineComponentProvider.gcScheduler;
+    this.datastore = onlineComponentProvider.datastore;
+    this.remoteStore = onlineComponentProvider.remoteStore;
+    this.syncEngine = onlineComponentProvider.syncEngine;
+    this.eventMgr = onlineComponentProvider.eventManager;
 
-      await offlineComponentProvider.initialize(componentConfiguration);
-      await onlineComponentProvider.initialize(
-        offlineComponentProvider,
-        componentConfiguration
-      );
+    this.eventMgr.onListen = syncEngineListen.bind(null, this.syncEngine);
+    this.eventMgr.onUnlisten = syncEngineUnlisten.bind(null, this.syncEngine);
 
-      this.persistence = offlineComponentProvider.persistence;
-      this.sharedClientState = offlineComponentProvider.sharedClientState;
-      this.localStore = offlineComponentProvider.localStore;
-      this.gcScheduler = offlineComponentProvider.gcScheduler;
-      this.datastore = onlineComponentProvider.datastore;
-      this.remoteStore = onlineComponentProvider.remoteStore;
-      this.syncEngine = onlineComponentProvider.syncEngine;
-      this.eventMgr = onlineComponentProvider.eventManager;
+    // When a user calls clearPersistence() in one client, all other clients
+    // need to be terminated to allow the delete to succeed.
+    this.persistence.setDatabaseDeletedListener(async () => {
+      await this.terminate();
+    });
 
-      this.eventMgr.onListen = syncEngineListen.bind(null, this.syncEngine);
-      this.eventMgr.onUnlisten = syncEngineUnlisten.bind(null, this.syncEngine);
-
-      // When a user calls clearPersistence() in one client, all other clients
-      // need to be terminated to allow the delete to succeed.
-      this.persistence.setDatabaseDeletedListener(async () => {
-        await this.terminate();
-      });
-
-      persistenceResult.resolve();
-    } catch (error) {
-      // Regardless of whether or not the retry succeeds, from an user
-      // perspective, offline persistence has failed.
-      persistenceResult.reject(error);
-
-      // An unknown failure on the first stage shuts everything down.
-      if (!this.canFallback(error)) {
-        throw error;
-      }
-      console.warn(
-        'Error enabling offline persistence. Falling back to' +
-          ' persistence disabled: ' +
-          error
-      );
-      return this.initializeComponents(
-        new MemoryOfflineComponentProvider(),
-        new OnlineComponentProvider(),
-        { durable: false },
-        user,
-        persistenceResult
-      );
-    }
-  }
-
-  /**
-   * Decides whether the provided error allows us to gracefully disable
-   * persistence (as opposed to crashing the client).
-   */
-  private canFallback(error: FirestoreError | DOMException): boolean {
-    if (error.name === 'FirebaseError') {
-      return (
-        error.code === Code.FAILED_PRECONDITION ||
-        error.code === Code.UNIMPLEMENTED
-      );
-    } else if (
-      typeof DOMException !== 'undefined' &&
-      error instanceof DOMException
-    ) {
-      // There are a few known circumstances where we can open IndexedDb but
-      // trying to read/write will fail (e.g. quota exceeded). For
-      // well-understood cases, we attempt to detect these and then gracefully
-      // fall back to memory persistence.
-      // NOTE: Rather than continue to add to this list, we could decide to
-      // always fall back, with the risk that we might accidentally hide errors
-      // representing actual SDK bugs.
-      return (
-        // When the browser is out of quota we could get either quota exceeded
-        // or an aborted error depending on whether the error happened during
-        // schema migration.
-        error.code === DOM_EXCEPTION_QUOTA_EXCEEDED ||
-        error.code === DOM_EXCEPTION_ABORTED ||
-        // Firefox Private Browsing mode disables IndexedDb and returns
-        // INVALID_STATE for any usage.
-        error.code === DOM_EXCEPTION_INVALID_STATE
-      );
-    }
-
-    return true;
+    this.initializationDone.resolve();
   }
 
   /**

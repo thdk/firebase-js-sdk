@@ -52,7 +52,7 @@ import {
   setOnlineComponentProvider
 } from './components';
 import { DEFAULT_HOST, DEFAULT_SSL } from '../../../lite/src/api/components';
-import { DatabaseInfo } from '../../../src/core/database_info';
+import { DatabaseId, DatabaseInfo } from '../../../src/core/database_info';
 import { AutoId } from '../../../src/util/misc';
 import { User } from '../../../src/auth/user';
 import { CredentialChangeListener } from '../../../src/api/credentials';
@@ -70,6 +70,20 @@ export interface Settings extends LiteSettings {
   cacheSizeBytes?: number;
 }
 
+// TODO(furestore-compat): Remove this class once we have an actual compat class
+// for FirebaseFirestore
+export interface FirestoreCompat {
+  readonly _initialized: boolean;
+  readonly _terminated: boolean;
+  readonly _databaseId: DatabaseId;
+  readonly _persistenceKey: string;
+  readonly _queue: AsyncQueue;
+  _getSettings(): Settings;
+  _getConfiguration(): Promise<ComponentConfiguration>;
+  _delete(): Promise<void>;
+  _setCredentialChangeListener(listener: (user: User) => void): void;
+}
+
 /**
  * The Cloud Firestore service interface.
  *
@@ -77,7 +91,7 @@ export interface Settings extends LiteSettings {
  */
 export class FirebaseFirestore
   extends LiteFirestore
-  implements _FirebaseService {
+  implements _FirebaseService, FirestoreCompat {
   readonly _queue = new AsyncQueue();
   readonly _persistenceKey: string;
   readonly _clientId = AutoId.newId();
@@ -245,7 +259,7 @@ export function getFirestore(app: FirebaseApp): FirebaseFirestore {
  * @return A promise that represents successfully enabling persistent storage.
  */
 export function enableIndexedDbPersistence(
-  firestore: FirebaseFirestore,
+  firestore: FirestoreCompat,
   persistenceSettings?: PersistenceSettings
 ): Promise<void> {
   verifyNotInitialized(firestore);
@@ -300,7 +314,7 @@ export function enableIndexedDbPersistence(
  * storage.
  */
 export function enableMultiTabIndexedDbPersistence(
-  firestore: FirebaseFirestore
+  firestore: FirestoreCompat
 ): Promise<void> {
   verifyNotInitialized(firestore);
 
@@ -353,7 +367,7 @@ export function enableMultiTabIndexedDbPersistence(
  * cleared. Otherwise, the promise is rejected with an error.
  */
 export function clearIndexedDbPersistence(
-  firestore: FirebaseFirestore
+  firestore: FirestoreCompat
 ): Promise<void> {
   if (firestore._initialized && !firestore._terminated) {
     throw new FirestoreError(
@@ -469,7 +483,7 @@ export function terminate(firestore: FirebaseFirestore): Promise<void> {
   return firestore._delete();
 }
 
-function verifyNotInitialized(firestore: FirebaseFirestore): void {
+function verifyNotInitialized(firestore: FirestoreCompat): void {
   if (firestore._initialized || firestore._terminated) {
     throw new FirestoreError(
       Code.FAILED_PRECONDITION,

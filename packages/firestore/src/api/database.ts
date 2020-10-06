@@ -49,11 +49,16 @@ import { Blob } from './blob';
 import { DatabaseId, DatabaseInfo } from '../core/database_info';
 import { ListenOptions } from '../core/event_manager';
 import {
+  ComponentConfiguration,
   MemoryOfflineComponentProvider,
   OfflineComponentProvider,
   OnlineComponentProvider
 } from '../core/component_provider';
-import { FirestoreClient, PersistenceSettings } from '../core/firestore_client';
+import {
+  FirestoreClient,
+  MAX_CONCURRENT_LIMBO_RESOLUTIONS,
+  PersistenceSettings
+} from '../core/firestore_client';
 import {
   Bound,
   Direction,
@@ -62,6 +67,7 @@ import {
   findFilterOperator,
   getFirstOrderByField,
   getInequalityFilterField,
+  hasLimitToLast,
   isCollectionGroupQuery,
   LimitType,
   newQueryComparator,
@@ -76,8 +82,7 @@ import {
   queryWithAddedOrderBy,
   queryWithEndAt,
   queryWithLimit,
-  queryWithStartAt,
-  hasLimitToLast
+  queryWithStartAt
 } from '../core/query';
 import { Transaction as InternalTransaction } from '../core/transaction';
 import { ChangeType, ViewSnapshot } from '../core/view_snapshot';
@@ -108,11 +113,18 @@ import {
   validateStringEnum,
   valueDescription
 } from '../util/input_validation';
-import { getLogLevel, logError, LogLevel, setLogLevel } from '../util/log';
+import {
+  getLogLevel,
+  logDebug,
+  logError,
+  LogLevel,
+  setLogLevel
+} from '../util/log';
 import { AutoId } from '../util/misc';
 import { Deferred } from '../util/promise';
 import { FieldPath as ExternalFieldPath } from './field_path';
 import {
+  CredentialChangeListener,
   CredentialsProvider,
   CredentialsSettings,
   EmptyCredentialsProvider,
@@ -140,6 +152,19 @@ import {
 import { UserDataWriter } from './user_data_writer';
 import { FirebaseAuthInternalName } from '@firebase/auth-interop-types';
 import { Provider } from '@firebase/component';
+import {
+  clearIndexedDbPersistence,
+  enableIndexedDbPersistence,
+  enableMultiTabIndexedDbPersistence,
+  FirestoreCompat
+} from '../../exp/src/api/database';
+import { User } from '../auth/user';
+import { remoteStoreHandleCredentialChange } from '../remote/remote_store';
+import {
+  getOfflineComponentProvider,
+  getOnlineComponentProvider,
+  getRemoteStore
+} from '../../exp/src/api/components';
 
 // settings() defaults:
 const DEFAULT_HOST = 'firestore.googleapis.com';
@@ -147,6 +172,11 @@ const DEFAULT_SSL = true;
 const DEFAULT_TIMESTAMPS_IN_SNAPSHOTS = true;
 const DEFAULT_FORCE_LONG_POLLING = false;
 const DEFAULT_IGNORE_UNDEFINED_PROPERTIES = false;
+
+/** DOMException error code constants. */
+const DOM_EXCEPTION_INVALID_STATE = 11;
+const DOM_EXCEPTION_ABORTED = 20;
+const DOM_EXCEPTION_QUOTA_EXCEEDED = 22;
 
 /**
  * Constant used to indicate the LRU garbage collection should be disabled.
@@ -313,15 +343,21 @@ class FirestoreSettings {
 /**
  * The root reference to the database.
  */
-export class Firestore implements PublicFirestore, FirebaseService {
+export class Firestore
+  implements PublicFirestore, FirebaseService, FirestoreCompat {
   // The objects that are a part of this API are exposed to third-parties as
   // compiled javascript so we want to flag our private members with a leading
   // underscore to discourage their use.
   readonly _databaseId: DatabaseId;
-  private readonly _persistenceKey: string;
+  readonly _persistenceKey: string;
   private _credentials: CredentialsProvider;
   private readonly _firebaseApp: FirebaseApp | null = null;
   private _settings: FirestoreSettings;
+
+  private readonly _receivedInitialUser = new Deferred<void>();
+  private _credentialListener: CredentialChangeListener = () => {};
+
+  private readonly _clientId = AutoId.newId();
 
   // The firestore client instance. This will be available as soon as
   // configureClient is called, but any calls against it will block until
@@ -335,16 +371,19 @@ export class Firestore implements PublicFirestore, FirebaseService {
   // TODO(mikelehen): Use modularized initialization instead.
   readonly _queue = new AsyncQueue();
 
+  _persistenceSettings: PersistenceSettings = { durable: false };
   _userDataReader: UserDataReader | undefined;
+  _user = User.UNAUTHENTICATED;
+
+  _terminated = false;
+  _initialized = false;
 
   // Note: We are using `MemoryComponentProvider` as a default
   // ComponentProvider to ensure backwards compatibility with the format
   // expected by the console build.
   constructor(
     databaseIdOrApp: FirestoreDatabase | FirebaseApp,
-    authProvider: Provider<FirebaseAuthInternalName>,
-    private _offlineComponentProvider: OfflineComponentProvider = new MemoryOfflineComponentProvider(),
-    private _onlineComponentProvider = new OnlineComponentProvider()
+    authProvider: Provider<FirebaseAuthInternalName>
   ) {
     if (typeof (databaseIdOrApp as FirebaseApp).options === 'object') {
       // This is very likely a Firebase app object
@@ -369,7 +408,49 @@ export class Firestore implements PublicFirestore, FirebaseService {
       this._credentials = new EmptyCredentialsProvider();
     }
 
+    this._credentials.setChangeListener(user => {
+      this._user = user;
+      if (!this._initialized) {
+        logDebug('FirebaseFirestore', 'Received. user=', user.uid);
+        this._receivedInitialUser.resolve();
+      } else {
+        this._queue.enqueueRetryable(async () => {
+          const remoteStore = await getRemoteStore(this);
+          return remoteStoreHandleCredentialChange(remoteStore, user);
+        });
+      }
+      this._user = user;
+      this._receivedInitialUser.resolve();
+    });
+
     this._settings = new FirestoreSettings({});
+  }
+
+  async _getConfiguration(): Promise<ComponentConfiguration> {
+    await this._receivedInitialUser.promise;
+
+    return {
+      asyncQueue: this._queue,
+      databaseInfo: this.makeDatabaseInfo(),
+      clientId: this._clientId,
+      credentials: this._credentials,
+      initialUser: this._user,
+      maxConcurrentLimboResolutions: MAX_CONCURRENT_LIMBO_RESOLUTIONS,
+      persistenceSettings: this._persistenceSettings
+    };
+  }
+
+  _setCredentialChangeListener(listener: (user: User) => void): void {
+    logDebug('FirebaseFirestore', 'Registering credential change listener');
+    this._credentialListener = listener;
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    this._receivedInitialUser.promise.then(() =>
+      this._credentialListener(this._user)
+    );
+  }
+
+  _delete(): Promise<void> {
+    return this.INTERNAL.delete();
   }
 
   get _dataReader(): UserDataReader {
@@ -424,6 +505,7 @@ export class Firestore implements PublicFirestore, FirebaseService {
   }
 
   enablePersistence(settings?: PublicPersistenceSettings): Promise<void> {
+    const persistenceResult = new Deferred();
     if (this._firestoreClient) {
       throw new FirestoreError(
         Code.FAILED_PRECONDITION,
@@ -434,7 +516,7 @@ export class Firestore implements PublicFirestore, FirebaseService {
     }
 
     let synchronizeTabs = false;
-    let experimentalForceOwningTab = false;
+    let forceOwningTab = false;
 
     if (settings) {
       if (settings.experimentalTabSynchronization !== undefined) {
@@ -447,11 +529,11 @@ export class Firestore implements PublicFirestore, FirebaseService {
         settings.experimentalTabSynchronization ??
         DEFAULT_SYNCHRONIZE_TABS;
 
-      experimentalForceOwningTab = settings.experimentalForceOwningTab
+      forceOwningTab = settings.experimentalForceOwningTab
         ? settings.experimentalForceOwningTab
         : false;
 
-      if (synchronizeTabs && experimentalForceOwningTab) {
+      if (synchronizeTabs && forceOwningTab) {
         throw new FirestoreError(
           Code.INVALID_ARGUMENT,
           "The 'experimentalForceOwningTab' setting cannot be used with 'synchronizeTabs'."
@@ -459,47 +541,45 @@ export class Firestore implements PublicFirestore, FirebaseService {
       }
     }
 
-    return this.configureClient(
-      this._offlineComponentProvider,
-      this._onlineComponentProvider,
-      {
-        durable: true,
-        cacheSizeBytes: this._settings.cacheSizeBytes,
-        synchronizeTabs,
-        forceOwningTab: experimentalForceOwningTab
+    this._persistenceSettings = {
+      durable: true,
+      cacheSizeBytes: this._settings.cacheSizeBytes,
+      synchronizeTabs,
+      forceOwningTab
+    };
+
+    return Promise.resolve().then(async () => {
+      try {
+        if (synchronizeTabs) {
+          await enableMultiTabIndexedDbPersistence(this);
+        } else {
+          await enableIndexedDbPersistence(this);
+        }
+        persistenceResult.resolve();
+      } catch (e) {
+        persistenceResult.reject(e);
+        if (!this.canFallback(e)) {
+          throw e;
+        }
+        console.warn(
+          'Error enabling offline persistence. Falling back to' +
+            ' persistence disabled: ' +
+            e
+        );
       }
-    );
+
+      await this.configureClient();
+      return persistenceResult.promise;
+    });
   }
 
   async clearPersistence(): Promise<void> {
-    if (
-      this._firestoreClient !== undefined &&
-      !this._firestoreClient.clientTerminated
-    ) {
-      throw new FirestoreError(
-        Code.FAILED_PRECONDITION,
-        'Persistence can only be cleared before a Firestore instance is ' +
-          'initialized or after it is terminated.'
-      );
-    }
-
-    const deferred = new Deferred<void>();
-    this._queue.enqueueAndForgetEvenWhileRestricted(async () => {
-      try {
-        await this._offlineComponentProvider.clearPersistence(
-          this._databaseId,
-          this._persistenceKey
-        );
-        deferred.resolve();
-      } catch (e) {
-        deferred.reject(e);
-      }
-    });
-    return deferred.promise;
+    return clearIndexedDbPersistence(this);
   }
 
   terminate(): Promise<void> {
     (this.app as _FirebaseApp)._removeServiceInstance('firestore');
+    this._terminated = true;
     return this.INTERNAL.delete();
   }
 
@@ -535,13 +615,7 @@ export class Firestore implements PublicFirestore, FirebaseService {
     if (!this._firestoreClient) {
       // Kick off starting the client but don't actually wait for it.
       // eslint-disable-next-line @typescript-eslint/no-floating-promises
-      this.configureClient(
-        new MemoryOfflineComponentProvider(),
-        new OnlineComponentProvider(),
-        {
-          durable: false
-        }
-      );
+      this.configureClient();
     }
     return this._firestoreClient as FirestoreClient;
   }
@@ -556,11 +630,7 @@ export class Firestore implements PublicFirestore, FirebaseService {
     );
   }
 
-  private configureClient(
-    offlineComponentProvider: OfflineComponentProvider,
-    onlineComponentProvider: OnlineComponentProvider,
-    persistenceSettings: PersistenceSettings
-  ): Promise<void> {
+  private async configureClient(): Promise<void> {
     debugAssert(!!this._settings.host, 'FirestoreSettings.host is not set');
 
     debugAssert(
@@ -570,14 +640,52 @@ export class Firestore implements PublicFirestore, FirebaseService {
 
     const databaseInfo = this.makeDatabaseInfo();
 
+    const offlineComponentProvider = await getOfflineComponentProvider(this);
+    const onlineComponentProvider = await getOnlineComponentProvider(this);
     this._firestoreClient = new FirestoreClient(this._credentials, this._queue);
 
+    this._initialized = true;
     return this._firestoreClient.start(
       databaseInfo,
       offlineComponentProvider,
-      onlineComponentProvider,
-      persistenceSettings
+      onlineComponentProvider
     );
+  }
+
+  /**
+   * Decides whether the provided error allows us to gracefully disable
+   * persistence (as opposed to crashing the client).
+   */
+  private canFallback(error: FirestoreError | DOMException): boolean {
+    if (error.name === 'FirebaseError') {
+      return (
+        error.code === Code.FAILED_PRECONDITION ||
+        error.code === Code.UNIMPLEMENTED
+      );
+    } else if (
+      typeof DOMException !== 'undefined' &&
+      error instanceof DOMException
+    ) {
+      // There are a few known circumstances where we can open IndexedDb but
+      // trying to read/write will fail (e.g. quota exceeded). For
+      // well-understood cases, we attempt to detect these and then gracefully
+      // fall back to memory persistence.
+      // NOTE: Rather than continue to add to this list, we could decide to
+      // always fall back, with the risk that we might accidentally hide errors
+      // representing actual SDK bugs.
+      return (
+        // When the browser is out of quota we could get either quota exceeded
+        // or an aborted error depending on whether the error happened during
+        // schema migration.
+        error.code === DOM_EXCEPTION_QUOTA_EXCEEDED ||
+        error.code === DOM_EXCEPTION_ABORTED ||
+        // Firefox Private Browsing mode disables IndexedDb and returns
+        // INVALID_STATE for any usage.
+        error.code === DOM_EXCEPTION_INVALID_STATE
+      );
+    }
+
+    return true;
   }
 
   private static databaseIdFromApp(app: FirebaseApp): DatabaseId {

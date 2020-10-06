@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-import { FirebaseFirestore } from './database';
+import { FirebaseFirestore, FirestoreCompat } from './database';
 import { PersistenceSettings } from '../../../src/core/firestore_client';
 import {
   MemoryOfflineComponentProvider,
@@ -45,16 +45,16 @@ export const LOG_TAG = 'ComponentProvider';
 // Instance maps that ensure that only one component provider exists per
 // Firestore instance.
 const offlineComponentProviders = new Map<
-  FirebaseFirestore,
+  FirestoreCompat,
   Promise<OfflineComponentProvider>
 >();
 const onlineComponentProviders = new Map<
-  FirebaseFirestore,
+  FirestoreCompat,
   Promise<OnlineComponentProvider>
 >();
 
 export async function setOfflineComponentProvider(
-  firestore: FirebaseFirestore,
+  firestore: FirestoreCompat,
   persistenceSettings: PersistenceSettings,
   offlineComponentProvider: OfflineComponentProvider
 ): Promise<void> {
@@ -83,7 +83,7 @@ export async function setOfflineComponentProvider(
 }
 
 export async function setOnlineComponentProvider(
-  firestore: FirebaseFirestore,
+  firestore: FirestoreCompat,
   onlineComponentProvider: OnlineComponentProvider
 ): Promise<void> {
   const onlineDeferred = new Deferred<OnlineComponentProvider>();
@@ -111,8 +111,9 @@ export async function setOnlineComponentProvider(
   onlineDeferred.resolve(onlineComponentProvider);
 }
 
-function getOfflineComponentProvider(
-  firestore: FirebaseFirestore
+// TODO(firestore-compat): Remove `export` once compat migration is complete.
+export function getOfflineComponentProvider(
+  firestore: FirestoreCompat
 ): Promise<OfflineComponentProvider> {
   firestore._queue.verifyOperationInProgress();
 
@@ -128,8 +129,9 @@ function getOfflineComponentProvider(
   return offlineComponentProviders.get(firestore)!;
 }
 
-function getOnlineComponentProvider(
-  firestore: FirebaseFirestore
+// TODO(firestore-compat): Remove `export` once compat migration is complete.
+export function getOnlineComponentProvider(
+  firestore: FirestoreCompat
 ): Promise<OnlineComponentProvider> {
   firestore._queue.verifyOperationInProgress();
 
@@ -153,7 +155,7 @@ export function getSyncEngine(
 }
 
 export function getRemoteStore(
-  firestore: FirebaseFirestore
+  firestore: FirestoreCompat
 ): Promise<RemoteStore> {
   return getOnlineComponentProvider(firestore).then(
     components => components.remoteStore
