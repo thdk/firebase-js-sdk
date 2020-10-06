@@ -1138,14 +1138,7 @@ class MemoryTestRunner extends TestRunner {
     clientIndex: number,
     config: SpecConfig
   ) {
-    super(
-      sharedWrites,
-      {
-        durable: false
-      },
-      clientIndex,
-      config
-    );
+    super(sharedWrites, {}, clientIndex, config);
   }
 
   protected async initializeOfflineComponentProvider(
@@ -1173,7 +1166,6 @@ class IndexedDbTestRunner extends TestRunner {
     super(
       sharedWrites,
       {
-        durable: true,
         cacheSizeBytes: LruParams.DEFAULT_CACHE_SIZE_BYTES,
         synchronizeTabs: true,
         forceOwningTab: false

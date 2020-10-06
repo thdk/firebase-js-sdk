@@ -145,7 +145,7 @@ export class FirebaseFirestore
       initialUser: this._user,
       maxConcurrentLimboResolutions: MAX_CONCURRENT_LIMBO_RESOLUTIONS,
       // Note: This will be overwritten if IndexedDB persistence is enabled.
-      persistenceSettings: { durable: false }
+      persistenceSettings: {}
     };
   }
 
@@ -279,7 +279,6 @@ export function enableIndexedDbPersistence(
     await setOfflineComponentProvider(
       firestore,
       {
-        durable: true,
         synchronizeTabs: false,
         cacheSizeBytes:
           settings.cacheSizeBytes || LruParams.DEFAULT_CACHE_SIZE_BYTES,
@@ -332,7 +331,6 @@ export function enableMultiTabIndexedDbPersistence(
     await setOfflineComponentProvider(
       firestore,
       {
-        durable: true,
         synchronizeTabs: true,
         cacheSizeBytes:
           settings.cacheSizeBytes || LruParams.DEFAULT_CACHE_SIZE_BYTES,

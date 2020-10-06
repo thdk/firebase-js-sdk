@@ -167,11 +167,6 @@ export class MockMultiTabOfflineComponentProvider extends MultiTabOfflineCompone
   }
 
   createPersistence(cfg: ComponentConfiguration): MockIndexedDbPersistence {
-    debugAssert(
-      cfg.persistenceSettings.durable,
-      'Can only start durable persistence'
-    );
-
     const persistenceKey = indexedDbStoragePrefix(
       cfg.databaseInfo.databaseId,
       cfg.databaseInfo.persistenceKey
@@ -182,13 +177,16 @@ export class MockMultiTabOfflineComponentProvider extends MultiTabOfflineCompone
       /* allowTabSynchronization= */ true,
       persistenceKey,
       cfg.clientId,
-      LruParams.withCacheSize(cfg.persistenceSettings.cacheSizeBytes),
+      LruParams.withCacheSize(
+        cfg.persistenceSettings.cacheSizeBytes ||
+          LruParams.DEFAULT_CACHE_SIZE_BYTES
+      ),
       cfg.asyncQueue,
       this.window,
       this.document,
       serializer,
       this.sharedClientState,
-      cfg.persistenceSettings.forceOwningTab
+      !!cfg.persistenceSettings.forceOwningTab
     );
   }
 }
@@ -208,10 +206,6 @@ export class MockMemoryOfflineComponentProvider extends MemoryOfflineComponentPr
   }
 
   createPersistence(cfg: ComponentConfiguration): Persistence {
-    debugAssert(
-      !cfg.persistenceSettings.durable,
-      'Can only start memory persistence'
-    );
     return new MockMemoryPersistence(
       this.gcEnabled
         ? MemoryEagerDelegate.factory

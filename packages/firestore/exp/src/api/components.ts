@@ -122,7 +122,7 @@ export function getOfflineComponentProvider(
     // eslint-disable-next-line @typescript-eslint/no-floating-promises
     setOfflineComponentProvider(
       firestore,
-      { durable: false },
+      {},
       new MemoryOfflineComponentProvider()
     );
   }

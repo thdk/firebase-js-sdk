@@ -23,6 +23,7 @@ import {
   DocumentReference,
   DocumentSnapshot,
   Firestore,
+  MultiTabIndexedDbPersistenceProvider,
   Query,
   QuerySnapshot
 } from '../../src/api/database';
@@ -44,10 +45,6 @@ import { doc, key, path as pathFrom } from './helpers';
 import { Provider, ComponentContainer } from '@firebase/component';
 import { TEST_PROJECT } from '../unit/local/persistence_test_helpers';
 
-const onlineComponentProvider = new OnlineComponentProvider();
-const offlineComponentProvider = new MultiTabOfflineComponentProvider(
-  onlineComponentProvider
-);
 /**
  * A mock Firestore. Will not work for integration test.
  */
@@ -57,8 +54,7 @@ export const FIRESTORE = new Firestore(
     database: '(default)'
   },
   new Provider('auth-internal', new ComponentContainer('default')),
-  offlineComponentProvider,
-  onlineComponentProvider
+  new MultiTabIndexedDbPersistenceProvider()
 );
 
 export function firestore(): Firestore {
@@ -72,8 +68,7 @@ export function newTestFirestore(): Firestore {
       database: '(default)'
     },
     new Provider('auth-internal', new ComponentContainer('default')),
-    offlineComponentProvider,
-    onlineComponentProvider
+    new MultiTabIndexedDbPersistenceProvider()
   );
 }
 
